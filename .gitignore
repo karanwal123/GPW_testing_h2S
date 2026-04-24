@@ -1,0 +1,39 @@
+# Virtual Environment
+venv/
+env/
+.venv/
+.python-version
+.env
+.env.*
+backend/.env
+backend/.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Node/Frontend
+node_modules/
+dist/
+build/
+.npm
+npm-debug.log*
+
+# Secrets and Service Accounts
+key.json
+*.pem
+*.key
+backend/secrets/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+secrets/

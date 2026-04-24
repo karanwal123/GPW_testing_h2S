@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+google-cloud-aiplatform
+googlemaps
+python-dotenv
+pydantic
+requests
+slowapi
