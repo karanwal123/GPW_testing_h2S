@@ -58,12 +58,12 @@ function App() {
               <div className="h-9 w-9 bg-gradient-to-br from-indigo-500 to-violet-600 rounded-xl flex items-center justify-center shadow-md shadow-indigo-200">
                 <Sparkles size={16} className="text-white" />
               </div>
-              <span className="text-lg font-bold text-slate-800 tracking-tight">
+              {/* <span className="text-lg font-bold text-slate-800 tracking-tight">
                 BharatBot
-              </span>
-              <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full uppercase tracking-wider">
+              </span> */}
+              {/* <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full uppercase tracking-wider">
                 Beta
-              </span>
+              </span> */}
             </div>
 
             {/* User pill */}
