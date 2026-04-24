@@ -1,6 +1,9 @@
 fastapi
 uvicorn[standard]
 google-cloud-aiplatform
+google-cloud-logging
+google-cloud-error-reporting
+google-cloud-monitoring
 googlemaps
 python-dotenv
 pydantic

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { ShieldCheck, ArrowRight, Eye, EyeOff } from "lucide-react";
+import { trackLogin } from "./analytics";
 
 export default function Login({ onLogin }) {
   const [username, setUsername] = useState("");
@@ -35,6 +36,7 @@ export default function Login({ onLogin }) {
       return;
     }
     setError("");
+    trackLogin(username.trim());
     onLogin(username.trim());
   };
 

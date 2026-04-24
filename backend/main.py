@@ -1,6 +1,9 @@
 import os
 import uuid
-from fastapi import FastAPI, HTTPException, Request, Response
+import logging
+import time
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -20,6 +23,18 @@ from orchestrator import get_orchestrator
 
 load_dotenv()
 
+# ── Google Cloud Logging Setup ──
+try:
+    from google.cloud import logging as cloud_logging
+    google_cloud_logging_client = cloud_logging.Client()
+    google_cloud_logging_client.setup_logging()
+    logger = logging.getLogger(__name__)
+    logger.info("✅ Google Cloud Logging initialized")
+except Exception as e:
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    logger.warning(f"⚠️  Cloud Logging unavailable, using standard logging: {e}")
+
 # ── Rate Limiter ──
 limiter = Limiter(key_func=get_remote_address)
 
@@ -28,12 +43,14 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── CORS — restrict to your actual frontend origin ──
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+_raw_allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+ALLOWED_ORIGINS = [o.strip() for o in _raw_allowed_origins.split(",") if o.strip()]
+ALLOW_CREDENTIALS = "*" not in ALLOWED_ORIGINS
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in ALLOWED_ORIGINS],
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=ALLOW_CREDENTIALS,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "Authorization"],
 )
@@ -72,19 +89,20 @@ try:
     if GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_PROJECT != "<ask me for this>":
         vertexai.init(project=GOOGLE_CLOUD_PROJECT, location=GOOGLE_CLOUD_REGION)
         vertex_initialized = True
+        logger.info(f"✅ Vertex AI initialized: project={GOOGLE_CLOUD_PROJECT}, region={GOOGLE_CLOUD_REGION}")
 except Exception as e:
-    print(f"Warning: Failed to initialize Vertex AI. {e}")
+    logger.warning(f"Failed to initialize Vertex AI: {e}", exc_info=True)
 
 # Google Maps client
 gmaps = None
 try:
     if MAPS_API_KEY and MAPS_API_KEY.startswith("AIzaSy"):
         gmaps = googlemaps.Client(key=MAPS_API_KEY)
-        print("✅ Google Maps client initialized.")
+        logger.info("✅ Google Maps client initialized")
     else:
-        print("⚠️  No valid GOOGLE_MAPS_API_KEY found (needs AIzaSy... key). Booth finder disabled.")
+        logger.warning("No valid GOOGLE_MAPS_API_KEY found (needs AIzaSy... key). Booth finder disabled.")
 except Exception as e:
-    print(f"Warning: Failed to initialize Google Maps. {e}")
+    logger.error(f"Failed to initialize Google Maps: {e}", exc_info=True)
 
 # ── Request Models with Input Validation ──
 class ChatRequest(BaseModel):
@@ -94,6 +112,117 @@ class ChatRequest(BaseModel):
 class BoothRequest(BaseModel):
     address: str = Field(..., min_length=1, max_length=500)
     session_id: str = Field(default="", max_length=200)
+
+
+SYSTEM_INSTRUCTION = (
+    "You are a helpful, accurate, and politically neutral Indian Election Assistant. "
+    "The current date is April 2026. Respond in the same language the user writes in. "
+    "Provide clear, concise answers with the LATEST and most RECENT information available. "
+    "ALWAYS format your answers using Markdown (use **bold** for emphasis, lists, etc). "
+    "If your tool provides URLs/links, you MUST include a 'Resources' section at the bottom "
+    "citing the specific URLs."
+)
+
+_extractor_model: Optional[GenerativeModel] = None
+_grounded_model: Optional[GenerativeModel] = None
+_fallback_model: Optional[GenerativeModel] = None
+
+
+def _get_extractor_model() -> GenerativeModel:
+    global _extractor_model
+    if _extractor_model is None:
+        _extractor_model = GenerativeModel(GEMINI_MODEL_NAME)
+    return _extractor_model
+
+
+def _get_grounded_model() -> GenerativeModel:
+    global _grounded_model
+    if _grounded_model is None:
+        tool = Tool.from_google_search_retrieval(grounding.GoogleSearchRetrieval())
+        _grounded_model = GenerativeModel(
+            GEMINI_MODEL_NAME,
+            system_instruction=[SYSTEM_INSTRUCTION],
+            tools=[tool],
+        )
+    return _grounded_model
+
+
+def _get_fallback_model() -> GenerativeModel:
+    global _fallback_model
+    if _fallback_model is None:
+        _fallback_model = GenerativeModel(
+            GEMINI_MODEL_NAME,
+            system_instruction=[SYSTEM_INSTRUCTION],
+        )
+    return _fallback_model
+
+
+def _extract_address_from_query(message: str) -> str:
+    try:
+        extractor = _get_extractor_model()
+        resp = extractor.generate_content(
+            f"Extract ONLY the physical address, locality, or city from this query. "
+            f"If none mentioned, reply with EXACTLY 'None': {message}"
+        )
+        return (resp.text or "").strip()
+    except Exception as exc:
+        logger.warning(f"Address extraction failed: {exc}")
+        return ""
+
+
+def _find_polling_stations(address: str, max_results: int = 3) -> dict:
+    geocode_result = gmaps.geocode(address)
+    if not geocode_result:
+        return {
+            "reply": f"I couldn't find the location for '{address}'. Please provide a more specific address.",
+            "booths": [],
+            "location": None,
+            "formatted_address": address,
+        }
+
+    location = geocode_result[0]["geometry"]["location"]
+    formatted_address = geocode_result[0].get("formatted_address", address)
+    places_result = gmaps.places_nearby(
+        location=location,
+        radius=3000,
+        keyword="school OR college OR community hall OR polling station OR government building",
+    )
+
+    if not places_result.get("results"):
+        return {
+            "reply": f"I couldn't find any polling stations near `{formatted_address}`. Please check the official ECI portal.",
+            "booths": [],
+            "location": location,
+            "formatted_address": formatted_address,
+        }
+
+    booths = []
+    for place in places_result["results"][:max_results]:
+        booths.append(
+            {
+                "name": place.get("name"),
+                "address": place.get("vicinity"),
+                "lat": place["geometry"]["location"]["lat"],
+                "lng": place["geometry"]["location"]["lng"],
+            }
+        )
+
+    reply_parts = [f"📍 **Polling stations near** `{formatted_address}`:\n"]
+    for i, b in enumerate(booths, 1):
+        maps_link = f"https://www.google.com/maps/search/?api=1&query={b['lat']},{b['lng']}"
+        reply_parts.append(f"{i}. **{b['name']}** — {b['address']}  ")
+        reply_parts.append(f"   [Open in Google Maps]({maps_link})\n")
+    reply_parts.append(
+        "\n> ⚠️ *These are likely venues, not confirmed booths. Verify your exact booth on the "
+        "[ECI Voter Helpline App](https://voters.eci.gov.in/) using your EPIC number.*"
+    )
+
+    return {
+        "reply": "\n".join(reply_parts),
+        "booths": booths,
+        "location": location,
+        "formatted_address": formatted_address,
+    }
 
 
 @app.get("/api/health")
@@ -130,37 +259,24 @@ async def chat_endpoint(request: Request, req: ChatRequest):
         address = decision["entities"].get("address", "")
         if not address:
             # Ask Gemini to extract the address from the query
-            try:
-                extractor = GenerativeModel(GEMINI_MODEL_NAME)
-                resp = extractor.generate_content(
-                    f"Extract ONLY the physical address, locality, or city from this query. If none mentioned, reply with EXACTLY 'None': {req.message}"
-                )
-                address = resp.text.strip()
-            except:
-                address = ""
+            address = _extract_address_from_query(req.message)
 
         if address and address.lower() != "none":
-            # Call the booth endpoint logic directly
             try:
-                geocode_result = gmaps.geocode(address)
-                if geocode_result:
-                    loc = geocode_result[0]['geometry']['location']
-                    fmt_addr = geocode_result[0].get('formatted_address', address)
-                    places = gmaps.places_nearby(location=loc, radius=3000,
-                        keyword="school OR college OR community hall OR polling station")
-                    if places.get('results'):
-                        parts = [f"📍 **Polling stations near** `{fmt_addr}`:\n"]
-                        for i, p in enumerate(places['results'][:3], 1):
-                            plat, plng = p['geometry']['location']['lat'], p['geometry']['location']['lng']
-                            link = f"https://www.google.com/maps/search/?api=1&query={plat},{plng}"
-                            parts.append(f"{i}. **{p.get('name')}** — {p.get('vicinity')}  ")
-                            parts.append(f"   [Open in Google Maps]({link})\n")
-                        parts.append("\n> ⚠️ *Verify your exact booth on the [ECI Voter Helpline App](https://voters.eci.gov.in/) using your EPIC number.*")
-                        reply = "\n".join(parts)
-                        orch.store_response(session_id, reply)
-                        return {"reply": reply, "intent": "location", "topic": "booth finder"}
+                station_result = _find_polling_stations(address)
+                if station_result["booths"]:
+                    orch.store_response(session_id, station_result["reply"])
+                    logger.info(
+                        f"Booth finder: found {len(station_result['booths'])} venues for {station_result['formatted_address']}",
+                        extra={"session_id": session_id},
+                    )
+                    return {
+                        "reply": station_result["reply"],
+                        "intent": "location",
+                        "topic": "booth finder",
+                    }
             except Exception as e:
-                print(f"Maps lookup failed, falling back to Gemini: {e}")
+                logger.error(f"Maps lookup failed, falling back to Gemini: {e}", exc_info=True)
         else:
             reply = "I need your location to find the nearest polling booth. Could you please provide your address or locality? For example: *Find my booth near Connaught Place, New Delhi*"
             orch.store_response(session_id, reply)
@@ -169,19 +285,17 @@ async def chat_endpoint(request: Request, req: ChatRequest):
     enriched_prompt = decision["prompt"]
     route = decision["route"]
     
-    system_instruction = "You are a helpful, accurate, and politically neutral Indian Election Assistant. The current date is April 2026. Respond in the same language the user writes in. Provide clear, concise answers with the LATEST and most RECENT information available. ALWAYS format your answers using Markdown (use **bold** for emphasis, lists, etc). If your tool provides URLs/links, you MUST include a 'Resources' section at the bottom citing the specific URLs."
-    
     try:
-        tool = Tool.from_google_search_retrieval(grounding.GoogleSearchRetrieval())
-        model = GenerativeModel(
-            GEMINI_MODEL_NAME,
-            system_instruction=[system_instruction],
-            tools=[tool]
-        )
+        model = _get_grounded_model()
+        start_time = time.time()
         response = model.generate_content(enriched_prompt)
+        elapsed_ms = (time.time() - start_time) * 1000
 
         # Store response in memory
         orch.store_response(session_id, response.text)
+        
+        logger.info(f"Chat response generated (with grounding) in {elapsed_ms:.1f}ms", 
+                   extra={"session_id": session_id, "intent": decision["intent"], "latency_ms": elapsed_ms})
 
         return {
             "reply": response.text,
@@ -190,14 +304,20 @@ async def chat_endpoint(request: Request, req: ChatRequest):
         }
                 
     except Exception as e:
-        print(f"Error generating content: {str(e)}")
+        logger.warning(f"Grounding-based response failed, retrying without grounding: {e}")
         try:
-            model = GenerativeModel(GEMINI_MODEL_NAME, system_instruction=[system_instruction])
+            model = _get_fallback_model()
+            start_time = time.time()
             response = model.generate_content(enriched_prompt)
+            elapsed_ms = (time.time() - start_time) * 1000
             orch.store_response(session_id, response.text)
+            
+            logger.info(f"Chat response generated (fallback) in {elapsed_ms:.1f}ms", 
+                       extra={"session_id": session_id, "intent": decision["intent"], "latency_ms": elapsed_ms})
+            
             return {"reply": response.text, "intent": decision["intent"], "topic": decision["topic"]}
         except Exception as fallback_error:
-            print(f"Fallback Error generating content: {str(fallback_error)}")
+            logger.error(f"Chat response generation failed (both attempts): {fallback_error}", exc_info=True)
             raise HTTPException(status_code=500, detail="Unable to generate a response right now.")
 
 # ── Booth Finder via Google Maps ──
@@ -213,49 +333,18 @@ async def booth_endpoint(request: Request, req: BoothRequest):
         return {"reply": "Please provide your address or locality to find the nearest polling booth."}
     
     try:
-        # Geocode the address
-        geocode_result = gmaps.geocode(address)
-        if not geocode_result:
-            return {"reply": f"I couldn't find the location for '{address}'. Please provide a more specific address."}
-        
-        location = geocode_result[0]['geometry']['location']
-        formatted_address = geocode_result[0].get('formatted_address', address)
-        
-        # Search for nearby polling-like venues
-        places_result = gmaps.places_nearby(
-            location=location,
-            radius=3000,
-            keyword="school OR college OR community hall OR polling station OR government building"
-        )
-        
-        if places_result.get('results'):
-            booths = []
-            for place in places_result['results'][:3]:
-                booths.append({
-                    "name": place.get('name'),
-                    "address": place.get('vicinity'),
-                    "lat": place['geometry']['location']['lat'],
-                    "lng": place['geometry']['location']['lng'],
-                })
-            
-            # Build a nice markdown reply
-            reply_parts = [f"📍 **Polling stations near** `{formatted_address}`:\n"]
-            for i, b in enumerate(booths, 1):
-                maps_link = f"https://www.google.com/maps/search/?api=1&query={b['lat']},{b['lng']}"
-                reply_parts.append(f"{i}. **{b['name']}** — {b['address']}  ")
-                reply_parts.append(f"   [Open in Google Maps]({maps_link})\n")
-            reply_parts.append("\n> ⚠️ *These are likely venues, not confirmed booths. Verify your exact booth on the [ECI Voter Helpline App](https://voters.eci.gov.in/) using your EPIC number.*")
-            
-            return {
-                "reply": "\n".join(reply_parts),
-                "booths": booths,
-                "location": location,
-            }
-        else:
-            return {"reply": f"I couldn't find any polling stations near `{formatted_address}`. Please check the official ECI portal."}
+        station_result = _find_polling_stations(address)
+        if not station_result["booths"]:
+            return {"reply": station_result["reply"]}
+
+        return {
+            "reply": station_result["reply"],
+            "booths": station_result["booths"],
+            "location": station_result["location"],
+        }
     
     except Exception as e:
-        print(f"Maps Error: {e}")
+        logger.error(f"Booth finder error: {e}", exc_info=True, extra={"address": address, "session_id": req.session_id})
         return {"reply": "I'm unable to access location services right now. Please check the [ECI website](https://voters.eci.gov.in/) to find your booth."}
 
 # ── Serve React frontend in production ──

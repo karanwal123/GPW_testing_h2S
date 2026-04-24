@@ -15,6 +15,9 @@ from collections import defaultdict
 from typing import Optional
 
 from vertexai.generative_models import GenerativeModel
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -150,7 +153,7 @@ class IntentClassifier:
             response = self.model.generate_content(prompt)
             return self._parse_response(response.text)
         except Exception as e:
-            print(f"[Orchestrator] Classification failed, using fallback: {e}")
+            logger.warning(f"Intent classification failed, using fallback: {e}", exc_info=True)
             return self._fallback_classify(message)
 
     def _parse_response(self, text: str) -> dict:

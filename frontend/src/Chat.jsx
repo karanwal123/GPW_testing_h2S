@@ -16,6 +16,11 @@ import {
 import axios from "axios";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import {
+  trackChatMessageSent,
+  trackChatResponseReceived,
+  trackAPIError,
+} from "./analytics";
 
 // ─── Font + Global Styles Injection ────────────────────────────────────────
 const GLOBAL_STYLES = `
@@ -215,16 +220,21 @@ export default function Chat({ username = "User" }) {
     setInput("");
     setMessages((p) => [...p, { id: Date.now(), role: "user", text }]);
     setIsLoading(true);
+    const startTime = Date.now();
+    trackChatMessageSent("user_input", text.length, sessionId);
     try {
       const { data } = await axios.post("/api/chat", {
         message: text,
         session_id: sessionId,
       });
+      const responseTime = Date.now() - startTime;
+      trackChatResponseReceived(data.intent || "unknown", responseTime);
       setMessages((p) => [
         ...p,
         { id: Date.now() + 1, role: "bot", text: data.reply || "No response." },
       ]);
-    } catch {
+    } catch (error) {
+      trackAPIError("/api/chat", error.response?.status || 0, error.message);
       setMessages((p) => [
         ...p,
         {

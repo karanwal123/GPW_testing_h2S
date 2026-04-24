@@ -3,6 +3,7 @@ import Cookies from "js-cookie";
 import Login from "./Login";
 import Chat from "./Chat";
 import { LogOut, Sparkles } from "lucide-react";
+import { trackLogout } from "./analytics";
 
 function App() {
   const [user, setUser] = useState(null);
@@ -20,11 +21,16 @@ function App() {
   }, []);
 
   const handleLogin = (username) => {
-    Cookies.set("session_user", username, { expires: 1 });
+    Cookies.set("session_user", username, {
+      expires: 1,
+      sameSite: "Strict",
+      secure: window.location.protocol === "https:",
+    });
     setUser(username);
   };
 
   const handleLogout = () => {
+    trackLogout();
     Cookies.remove("session_user");
     setUser(null);
   };
