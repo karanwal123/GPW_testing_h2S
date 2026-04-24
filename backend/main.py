@@ -1,4 +1,5 @@
 import os
+import uuid
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -44,11 +45,19 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.method in ("POST", "PUT", "PATCH"):
             content_length = request.headers.get("content-length")
-            if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
-                return JSONResponse(
-                    status_code=413,
-                    content={"detail": "Request body too large. Maximum size is 10 KB."},
-                )
+            if content_length:
+                # Guard against malformed content-length headers to avoid 500s.
+                try:
+                    if int(content_length) > MAX_REQUEST_BODY_BYTES:
+                        return JSONResponse(
+                            status_code=413,
+                            content={"detail": "Request body too large. Maximum size is 10 KB."},
+                        )
+                except ValueError:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"detail": "Invalid content-length header."},
+                    )
         return await call_next(request)
 
 app.add_middleware(RequestSizeLimitMiddleware)
@@ -86,6 +95,17 @@ class BoothRequest(BaseModel):
     address: str = Field(..., min_length=1, max_length=500)
     session_id: str = Field(default="", max_length=200)
 
+
+@app.get("/api/health")
+async def health_check():
+    return {
+        "status": "ok",
+        "vertex_initialized": vertex_initialized,
+        "maps_initialized": gmaps is not None,
+        "project": GOOGLE_CLOUD_PROJECT,
+        "region": GOOGLE_CLOUD_REGION,
+    }
+
 @app.post("/api/chat")
 @limiter.limit("20/minute")
 async def chat_endpoint(request: Request, req: ChatRequest):
@@ -93,7 +113,8 @@ async def chat_endpoint(request: Request, req: ChatRequest):
         return {"reply": "Backend is running, but Vertex AI is not initialized. Please ensure GOOGLE_CLOUD_PROJECT and GOOGLE_APPLICATION_CREDENTIALS are set correctly."}
 
     # ── Orchestrator: classify, extract entities, build context ──
-    session_id = req.session_id or "default"
+    # Avoid shared conversation state when client does not provide a session id.
+    session_id = req.session_id or str(uuid.uuid4())
     orch = get_orchestrator(GEMINI_MODEL_NAME)
     decision = orch.process(session_id, req.message)
 
@@ -177,7 +198,7 @@ async def chat_endpoint(request: Request, req: ChatRequest):
             return {"reply": response.text, "intent": decision["intent"], "topic": decision["topic"]}
         except Exception as fallback_error:
             print(f"Fallback Error generating content: {str(fallback_error)}")
-            raise HTTPException(status_code=500, detail=str(fallback_error))
+            raise HTTPException(status_code=500, detail="Unable to generate a response right now.")
 
 # ── Booth Finder via Google Maps ──
 @app.post("/api/booth")
