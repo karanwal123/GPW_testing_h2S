@@ -41,31 +41,19 @@ export default function Login({ onLogin }) {
   };
 
   return (
-    <div className="w-full max-w-sm animate-fade-in-up">
-      {/* Logo */}
-      <div className="text-center mb-8">
-        <div className="mx-auto h-14 w-14 bg-gradient-to-br from-indigo-500 to-violet-600 rounded-2xl flex items-center justify-center mb-5 shadow-lg shadow-indigo-200/50">
-          <ShieldCheck className="h-7 w-7 text-white" />
+    <div className="login-card-wrap">
+      <div className="login-brand-block">
+        <div className="login-brand-icon" aria-hidden="true">
+          <ShieldCheck className="h-7 w-7" />
         </div>
-        <h2 className="text-2xl font-bold text-slate-900 tracking-tight mb-1.5">
-          Welcome back
-        </h2>
-        <p className="text-slate-500 text-sm">
-          Sign in to your Election Assistant
-        </p>
+        <h2 className="login-title">Welcome back</h2>
+        <p className="login-subtitle">Sign in to your Election Assistant</p>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-100 p-7">
-        <form
-          onSubmit={handleSubmit}
-          className="space-y-5"
-          aria-label="Sign in form"
-        >
-          <div>
-            <label
-              htmlFor="login-username"
-              className="block text-[13px] font-semibold text-slate-700 mb-1.5"
-            >
+      <div className="login-card">
+        <form onSubmit={handleSubmit} className="login-form" aria-label="Sign in form">
+          <div className="login-field">
+            <label htmlFor="login-username" className="login-label">
               Username
             </label>
             <input
@@ -73,26 +61,23 @@ export default function Login({ onLogin }) {
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-4 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all bg-slate-50/50 focus:bg-white text-[15px] outline-none"
+              className="login-input"
               placeholder="e.g. aditya"
               autoComplete="username"
               aria-invalid={Boolean(error) && !username.trim()}
             />
           </div>
-          <div>
-            <label
-              htmlFor="login-password"
-              className="block text-[13px] font-semibold text-slate-700 mb-1.5"
-            >
+          <div className="login-field">
+            <label htmlFor="login-password" className="login-label">
               Password
             </label>
-            <div className="relative">
+            <div className="login-password-wrap">
               <input
                 id="login-password"
                 type={showPass ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-2.5 pr-11 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all bg-slate-50/50 focus:bg-white text-[15px] outline-none"
+                className="login-input login-password-input"
                 placeholder="••••••••"
                 autoComplete="current-password"
                 aria-describedby="password-help"
@@ -100,42 +85,32 @@ export default function Login({ onLogin }) {
               <button
                 type="button"
                 onClick={() => setShowPass(!showPass)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                className="login-password-toggle"
                 aria-label={showPass ? "Hide password" : "Show password"}
                 aria-pressed={showPass}
               >
                 {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
-            <p id="password-help" className="mt-1 text-[12px] text-slate-400">
+            <p id="password-help" className="login-help">
               Use any strong password that meets the on-screen requirements.
             </p>
           </div>
 
           {error && (
-            <div
-              className="p-3 rounded-xl bg-red-50 border border-red-100"
-              role="alert"
-              aria-live="polite"
-            >
-              <p className="text-red-600 text-[13px] leading-snug">{error}</p>
+            <div className="login-error" role="alert" aria-live="polite">
+              <p>{error}</p>
             </div>
           )}
 
-          <button
-            type="submit"
-            className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white font-semibold py-3 px-4 rounded-xl transition-all shadow-lg shadow-indigo-200/50 hover:shadow-xl hover:shadow-indigo-300/50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 flex items-center justify-center space-x-2 group"
-          >
+          <button type="submit" className="login-submit">
             <span>Continue</span>
-            <ArrowRight
-              size={16}
-              className="group-hover:translate-x-0.5 transition-transform"
-            />
+            <ArrowRight size={16} />
           </button>
         </form>
       </div>
 
-      <p className="text-center text-[12px] text-slate-400 mt-5">
+      <p className="login-footnote">
         Powered by Vertex AI &middot; Google Cloud
       </p>
     </div>

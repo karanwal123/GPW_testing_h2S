@@ -23,17 +23,28 @@ from orchestrator import get_orchestrator
 
 load_dotenv()
 
-# ── Google Cloud Logging Setup ──
-try:
-    from google.cloud import logging as cloud_logging
-    google_cloud_logging_client = cloud_logging.Client()
-    google_cloud_logging_client.setup_logging()
-    logger = logging.getLogger(__name__)
-    logger.info("✅ Google Cloud Logging initialized")
-except Exception as e:
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    logger.warning(f"⚠️  Cloud Logging unavailable, using standard logging: {e}")
+def _env_flag(name: str, default: str = "false") -> bool:
+    value = os.getenv(name, default).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+# ── Logging Setup (local by default; cloud optional) ──
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+ENABLE_CLOUD_LOGGING = _env_flag("ENABLE_CLOUD_LOGGING", "false")
+
+if ENABLE_CLOUD_LOGGING:
+    try:
+        from google.cloud import logging as cloud_logging
+
+        google_cloud_logging_client = cloud_logging.Client()
+        google_cloud_logging_client.setup_logging()
+        logger.info("✅ Google Cloud Logging initialized")
+    except Exception as e:
+        logger.warning(f"⚠️  Cloud Logging unavailable, using standard logging: {e}")
+else:
+    logger.info("ℹ️ Cloud Logging disabled (using local standard logging)")
 
 # ── Rate Limiter ──
 limiter = Limiter(key_func=get_remote_address)
@@ -138,7 +149,14 @@ def _get_extractor_model() -> GenerativeModel:
 def _get_grounded_model() -> GenerativeModel:
     global _grounded_model
     if _grounded_model is None:
-        tool = Tool.from_google_search_retrieval(grounding.GoogleSearchRetrieval())
+        # Vertex no longer accepts google_search_retrieval for recent Gemini calls.
+        # Prefer the newer google_search tool shape when available.
+        if hasattr(grounding, "GoogleSearch"):
+            tool = Tool(google_search=grounding.GoogleSearch())
+        elif hasattr(Tool, "from_google_search"):
+            tool = Tool.from_google_search()
+        else:
+            tool = Tool.from_google_search_retrieval(grounding.GoogleSearchRetrieval())
         _grounded_model = GenerativeModel(
             GEMINI_MODEL_NAME,
             system_instruction=[SYSTEM_INSTRUCTION],
